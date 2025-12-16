@@ -1,25 +1,16 @@
 #%%
 import os
 import io
-import json
-import ast
-import itertools
-import collections
+import shap
 from time import time
-import sklearn
-from tqdm import tqdm
-
-from itertools import cycle
-import pickle
-import random as rn
-import datetime
 
 import numpy as np 
 import pandas as pd
 
-# from random import randint
-from scipy.stats import uniform, randint
+
 from collections import Counter 
+
+from scipy.stats import loguniform
 
 from sklearn.model_selection import (
     ShuffleSplit, 
@@ -27,26 +18,21 @@ from sklearn.model_selection import (
     StratifiedKFold, 
     StratifiedShuffleSplit, 
     KFold
-    ) 
+    )
+ 
 from sklearn.model_selection import (
     RandomizedSearchCV, 
-    GridSearchCV, 
     cross_val_score
     )
-from sklearn.preprocessing import StandardScaler
-from sklearn.preprocessing import MultiLabelBinarizer, LabelBinarizer,LabelEncoder
+
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import (
     accuracy_score, 
     confusion_matrix, 
-    classification_report, 
-    max_error, 
+    classification_report,  
     precision_recall_fscore_support, 
     roc_auc_score,
     roc_curve, 
-    auc, 
-    precision_score, 
-    recall_score, 
-    f1_score
     )
 
 from imblearn.under_sampling import RandomUnderSampler
@@ -61,10 +47,16 @@ from sklearn.linear_model import (
 
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.linear_model import SGDClassifier
 from sklearn.svm import SVC
 from sklearn.neural_network import MLPClassifier
 from xgboost import XGBClassifier
+
+from my_functions import (
+    plot_confusion_matrix, 
+    visualize,
+    evaluate_model,
+    plot_algortm_comparison
+)
 
 import matplotlib.pyplot as plt # for making plots
 import seaborn as sns
@@ -79,91 +71,6 @@ sns.set(
 # %matplotlib inline
 
 plt.rcParams["figure.figsize"] = [6,4]
-
-#%%
-
-# This normalizes the confusion matrix and ensures neat plotting for all outputs.
-# Function for plotting confusion matrcies
-
-def plot_confusion_matrix(
-                            cm, 
-                            normalize = True,
-                            title = 'Confusion matrix',
-                            xrotation = 0,
-                            yrotation = 0,
-                            cmap = plt.cm.Blues,
-                            printout = False
-                        ):
-
-    """
-    This function prints and plots the confusion matrix.
-    Normalization can be applied by setting `normalize=True`.
-    """
-    if normalize:
-        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
-        if printout:
-            print("Normalized confusion matrix")
-    else:
-        if printout:
-            print('Confusion matrix')
-
-    if printout:
-        print(cm)
-    
-    plt.figure(figsize=(6,4))
-
-    plt.imshow(
-                cm, 
-                interpolation = 'nearest', 
-                vmin = .0, 
-                vmax = 1.0,  
-                cmap = cmap
-            )
-        
-    # plt.title(title)
-    plt.colorbar()
-    classes_names = ['Bovine', 'Human']
-    tick_marks = np.arange(len(classes))
-    plt.xticks(tick_marks, classes_names, rotation = xrotation)
-    plt.yticks(tick_marks, classes_names, rotation = yrotation)
-
-    fmt = '.2f' if normalize else 'd'
-    thresh = cm.max() / 2.
-    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
-        plt.text(
-                    j, 
-                    i, 
-                    format(cm[i, j], fmt), 
-                    horizontalalignment = "center",
-                    color = "white" if cm[i, j] > thresh else "black"
-                )
-
-    plt.tight_layout()
-    plt.ylabel('True Host', weight = 'bold')
-    plt.xlabel('Predicted Host', weight = 'bold')
-    plt.savefig(
-        os.path.join("..", "Results", figure_name + ".png"
-        ), 
-        dpi = 500, 
-        bbox_inches = "tight"
-        
-    )
-
-#%%
-
-def visualize(figure_name, predicted, true):
-    # Sort out predictions and true labels
-    classes_pred = np.asarray(predicted)
-    classes_true = np.asarray(true)
-    print(classes_pred.shape)
-    print(classes_true.shape)
-    cnf_matrix = confusion_matrix(
-                                    classes_true, 
-                                    classes_pred, 
-                                    # labels = classes
-                                )
-    plot_confusion_matrix(cnf_matrix)
-
 
 
 #%%
@@ -198,98 +105,6 @@ print('Size of blood meal by count', Counter(blood_meal_lab_df['blood_meal']))
 blood_meal_lab_df.head()
 
 #%%
-
-# Load hours blood meal data
-
-blood_hours_df = pd.read_csv(
-       os.path.join("..", "Data", "Bloodfed_hours.dat"), 
-       delimiter = '\t'
-    )
-
-
-# Rename items in the column
-blood_hours_df['Cat3'] = blood_hours_df['Cat3'].str.replace('CW', 'Bovine')
-blood_hours_df['Cat3'] = blood_hours_df['Cat3'].str.replace('HN', 'Human')
-
-# view the data
-blood_hours_df.head()
-
-#%%
-
-# count the number of blood hours post feeding
-Counter(blood_hours_df['Cat4'])
-
-#%% 
-
-# filter data with blood meal hours (To be used for model testing)
-blood_6hours = blood_hours_df[blood_hours_df['Cat4'] == '6H']
-blood_12hours = blood_hours_df[blood_hours_df['Cat4'] == '12H']
-blood_24hours = blood_hours_df[blood_hours_df['Cat4'] == '24H']
-blood_48hours = blood_hours_df[blood_hours_df['Cat4'] == '48H']
-
-#%%
-
-# define parameters
-
-num_folds = 5 # split data into five folds
-seed = np.random.randint(0, 81470) # random seed value
-scoring = 'accuracy' # metric for model evaluation
-
-# specify cross-validation strategy
-
-kf = KFold(
-            n_splits = num_folds,
-            shuffle = True,
-            random_state = seed
-        )
-
-# make a list of models to test
-
-models = []
-models.append(
-                (
-                    'KNN', KNeighborsClassifier()
-                )
-            )
-
-models.append(
-                (
-                    'LR', LogisticRegression(
-                                                multi_class = 'ovr',
-                                                max_iter = 2000,
-                                                random_state = seed
-                                            )
-                )
-            )
-
-models.append(
-                (
-                    'SVM', SVC(
-                                kernel = 'linear',
-                                gamma = 'auto',
-                                random_state = seed
-                            )
-                )
-            )
-
-models.append(
-                (
-                    'RF', RandomForestClassifier(
-                                                    n_estimators = 500,
-                                                    random_state = seed
-                                                )
-                )
-            )
-
-models.append(
-                ('XGB', XGBClassifier(
-                                        random_state = seed,
-                                        n_estimators = 500
-                                    )
-                )
-            )
-
-#%% 
 # Prepare data for model training
 
 # first, we need to count the number of samples in each class, checking for class imbalance
@@ -309,68 +124,61 @@ scaler = StandardScaler().fit(np.asarray(X))
 X_scl = scaler.transform(np.asarray(X))
 
 #%%
-# Evaluate models to get the best performing model
 
-results = []
-names = []
+# Prepare models for evaluation
+# define parameters
 
-for name, model in models:
-    cv_results = cross_val_score(
-        model,
-        X_scl,
-        y_encoded,
-        cv=kf,
-        scoring=scoring
-    )
-    results.append(cv_results)
-    names.append(name)
-    msg = f'Cross validation score for {name}: {cv_results.mean():.2%} ± {cv_results.std():.2%}'
-    print(msg)
+num_folds = 5 # split data into five folds
+seed = np.random.randint(0, 81470) # random seed value
+scoring = 'accuracy' # metric for model evaluation
+
+# specify cross-validation strategy
+
+kf = KFold(n_splits = num_folds,
+           shuffle = True,
+           random_state = seed
+        )
+
+# make a list of models to test
+
+models = []
+models.append(('KNN', KNeighborsClassifier()))
+
+models.append(('LR', LogisticRegression(multi_class = 'ovr',
+                                        max_iter = 2000,
+                                        random_state = seed)))
+
+models.append(('SVM', SVC(kernel = 'linear',
+                          gamma = 'auto',
+                          random_state = seed
+                          )))
+
+models.append(('RF', RandomForestClassifier(n_estimators = 500,
+                                            random_state = seed)))
+
+models.append(('XGB', XGBClassifier(random_state = seed,
+                                    n_estimators = 500)))
+
+models.append(("MLP", MLPClassifier(random_state=seed, max_iter = 3500,
+                                    solver = 'sgd',
+                                    activation = 'logistic', alpha = 0.001)))
+
+
 
 #%%
 
-# Plot results for algorithm comparison
+# evaluate and Plot results for algorithm comparison
 
-# transform the vectors into pandas dataframe
-results_df = pd.DataFrame(
-                            results,
-                            columns = (0, 1, 2, 3, 4)
-                        ).T # columns should correspond to the number of folds, k = 5
-
-results_df.columns = names
-results_df = pd.melt(results_df) # melt data frame into a long format.
-results_df.rename(
-                    columns = {'variable':'Model', 'value':'Accuracy'},
-                    inplace = True
-                )
+results, names = evaluate_model(models, X_scl, y_encoded, kf, scoring)
+plot_algortm_comparison(results, names)
 
 
-# Plotting the algorithm selection
-
-plt.figure(figsize = (5, 4))
-
-sns.boxplot(
-                x = 'Model',
-                y = 'Accuracy',
-                data = results_df,
-                hue = 'Model',
-                palette = 'colorblind'
-            )
-# sns.boxplot(x = names, y = results, width = .4)
-sns.despine(offset = 5, trim = False)
-plt.xticks(rotation = 90)
-plt.yticks(np.arange(0.0, 1.0 + .1, step = 0.2))
-plt.ylabel('Accuracy', weight = 'bold')
-plt.xlabel(" ")
-plt.legend().remove()
-plt.tight_layout()
-
-# save the plot
-plt.savefig(
-    os.path.join("..", "Results", "model_comparison.png"),
-    dpi = 500,
-    bbox_inches = "tight"
-)
+# # save the plot
+# plt.savefig(
+#     os.path.join("..", "Results", "model_comparison.png"),
+#     dpi = 500,
+#     bbox_inches = "tight"
+# )
 
 
 #%%
@@ -378,26 +186,54 @@ plt.savefig(
 # big LOOP
 # TUNNING THE SELECTED MODEL
 
-num_rounds = 5 # increase this to 5 or 10 once code is bug-free
+num_rounds = 1 # increase this to 5 or 10 once code is bug-free
 scoring = 'accuracy' # score model accuracy
 
 # prepare matrices of results
 kf_results = pd.DataFrame() # model parameters and global accuracy score
-lr_coef_df = pd.DataFrame() # model coef for each iteration
+shap_importance_df = pd.DataFrame() # model coef for each iteration
 kf_per_class_results = [] # per class accuracy scores
 save_predicted, save_true = [], [] # save predicted and true values for each loop
 all_predicted_probs = [] # save predicted probabilities for each loop
 
 start = time()
 
+# Create the MLP model with linear kernel
+classifier = MLPClassifier(
+    max_iter = 3500,
+    solver = 'sgd',
+    early_stopping = True,
+    random_state = seed
+)
+
 # Define the parameter grid
 random_grid = {
-    'C': [0.001, 0.01, 0.1, 0.2, 0.4, 0.5, 0.6, 0.8, 1, 10, 100, 1000],
-    'class_weight': ['balanced', None]  # To handle potential class imbalance
-}
 
-# Create the SVC model with linear kernel
-classifier = SVC(kernel='linear', probability=True)
+    # Network architecture
+    "hidden_layer_sizes": [
+        (50,), (100,), (200,),
+        (50, 50), (100, 50), (100, 100),
+        (200, 100)
+    ],
+
+    # Activation functions
+    "activation": ["relu", "tanh"],
+
+    # Solver choice
+    "solver": ["adam", "sgd"],
+
+    # Regularization
+    "alpha": loguniform(1e-5, 1e-1),
+
+    # Learning rate
+    "learning_rate_init": loguniform(1e-4, 1e-1),
+
+    # SGD-only
+    "learning_rate": ["constant", "adaptive"],
+
+    # Batch size
+    "batch_size": [32, 64, 128, 256]
+}
 
 for round in range (num_rounds):
     SEED = np.random.randint(0, 8147)
@@ -413,11 +249,12 @@ for round in range (num_rounds):
         print('The shape of X val set : {}'.format(X_val.shape))
         print('The shape of y val set : {}'.format(y_val.shape))
 
-        # RANDOMSED GRID SEARCH
+        #------------------RANDOMSED GRID SEARCH--------------#
+
         # Random search of parameters, using 5 fold cross validation, 
         # search across 100 different combinations, and use all available cores
 
-        n_iter_search = 10
+        n_iter_search = 50
         rsCV = RandomizedSearchCV(
             verbose=1,
             estimator=classifier, 
@@ -448,17 +285,16 @@ for round in range (num_rounds):
         # fit the model
         best_classifier.fit(X_train_set, y_train_set)
 
+        #-------------------Predictions---------------------#
+
         # predict test instances 
 
         y_pred = best_classifier.predict(X_val)
         classes = ['Bovine', 'Human']
-        local_cm = confusion_matrix(y_val, y_pred)
-        local_report = classification_report(y_val, y_pred)
-
+        
         # Get predicted probabilities
         predicted_probs = best_classifier.predict_proba(X_val)
         all_predicted_probs.append(predicted_probs)  # Save the probabilities for the current fold
-
 
         # zip predictions for all rounds for plotting averaged confusion matrix
             
@@ -466,19 +302,70 @@ for round in range (num_rounds):
             save_predicted.append(predicted)
             save_true.append(true)
 
-        # # append feauture importances
-        coef_table = pd.Series(best_classifier.coef_[0], X.columns)
-        coef_table = pd.DataFrame(coef_table)
-        lr_coef_df = pd.concat(
-            [
-                lr_coef_df, 
-                coef_table
-            ],
-            axis = 1,
-            ignore_index = True
+        # =====================================================
+        # ===================== SHAP =========================
+        # =====================================================
+
+        # # sample to keep SHAP fast
+        # X_bg = X_train_set[
+        #     np.random.choice(
+        #         X_train_set.shape[0],
+        #         size=min(100, X_train_set.shape[0]),
+        #         replace=False
+        #     )
+        # ]
+
+        # X_shap = X_val[
+        #     np.random.choice(
+        #         X_val.shape[0],
+        #         size=min(200, X_val.shape[0]),
+        #         replace=False
+        #     )
+        # ]
+
+        # explainer = shap.KernelExplainer(
+        #     best_classifier.predict_proba,
+        #     X_bg
+        # )
+
+        explainer = shap.KernelExplainer(
+            best_classifier.predict_proba,
+            X_train_set
         )
 
-        # summarizing results
+        shap_values = explainer.shap_values(
+            X_val, 
+            nsamples = 100
+        )
+
+        # Binarry vs multiclass
+        if isinstance(shap_values, list):
+            shap_vals = shap_values[1]
+        else:
+            shap_vals = shap_values
+
+        mean_abs_shap = np.mean(np.abs(shap_vals), axis = 0)
+
+        iter_shap_df = pd.DataFrame({
+            "feature": X.columns,
+            "shap_importance": mean_abs_shap,
+            "round": round}
+        )
+
+        shap_importance_df = pd.concat(
+            [
+                shap_importance_df, 
+                iter_shap_df
+            ],
+            ignore_index = True
+        )
+        
+        # =====================================================
+        # -------------------reults summary--------------------
+
+        local_cm = confusion_matrix(y_val, y_pred)
+        local_report = classification_report(y_val, y_pred)
+
         local_kf_results = pd.DataFrame(
                                             [
                                                 ("Accuracy", accuracy_score(y_val, y_pred)), 
@@ -492,6 +379,7 @@ for round in range (num_rounds):
             
         local_kf_results.columns = local_kf_results.iloc[0]
         local_kf_results = local_kf_results[1:]
+
         kf_results = pd.concat(
                                 [
                                     kf_results, 
@@ -509,6 +397,18 @@ for round in range (num_rounds):
 elapsed = time() - start
 print("Time elapsed: {0:.2f} minutes ({1:.1f} sec)".format(
     elapsed / 60, elapsed))
+
+
+#%%
+# After the loop: aggregate SHAP results
+shap_summary = (
+    shap_importance_df
+    .groupby("feature")["shap_importance"]
+    .mean()
+    .sort_values(ascending=False)
+    .reset_index()
+)
+
 
 #%%
 # Now you can use all_predicted_probs to plot the ROC curve
@@ -610,6 +510,35 @@ plt.savefig(os.path.join("..", "Results", "lgr_coef.png"),
 
 #%%
 # Making prediction on the blood meal hours data
+# Load hours blood meal data
+
+blood_hours_df = pd.read_csv(
+       os.path.join("..", "Data", "Bloodfed_hours.dat"), 
+       delimiter = '\t'
+    )
+
+
+# Rename items in the column
+blood_hours_df['Cat3'] = blood_hours_df['Cat3'].str.replace('CW', 'Bovine')
+blood_hours_df['Cat3'] = blood_hours_df['Cat3'].str.replace('HN', 'Human')
+
+# view the data
+blood_hours_df.head()
+
+#%%
+
+# count the number of blood hours post feeding
+Counter(blood_hours_df['Cat4'])
+
+#%% 
+
+# filter data with blood meal hours (To be used for model testing)
+blood_6hours = blood_hours_df[blood_hours_df['Cat4'] == '6H']
+blood_12hours = blood_hours_df[blood_hours_df['Cat4'] == '12H']
+blood_24hours = blood_hours_df[blood_hours_df['Cat4'] == '24H']
+blood_48hours = blood_hours_df[blood_hours_df['Cat4'] == '48H']
+
+#%%
 # 6 hours data
 
 # define the features and target variable

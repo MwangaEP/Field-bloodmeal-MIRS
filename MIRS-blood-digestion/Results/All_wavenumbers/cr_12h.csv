@@ -1,0 +1,6 @@
+class,precision,recall,f1-score,support
+Bovine,0.87,0.9,0.88,420
+Human,0.89,0.87,0.88,427
+accuracy,,,0.88,847
+macro avg,0.88,0.88,0.88,847
+weighted avg,0.88,0.88,0.88,847

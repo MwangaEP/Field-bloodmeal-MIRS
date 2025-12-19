@@ -32,6 +32,7 @@ plt.rcParams["figure.figsize"] = [6,4]
 
 def plot_confusion_matrix(
                             cm,
+                            figure_name,
                             normalize = True,
                             title = 'Confusion matrix',
                             xrotation = 0,
@@ -91,8 +92,10 @@ def plot_confusion_matrix(
         ), 
         dpi = 500, 
         bbox_inches = "tight"
-        
     )
+
+    # plt.close() # close the plot to prevent memory overload
+        
 
 #%%
 
@@ -100,14 +103,16 @@ def visualize(figure_name, predicted, true):
     # Sort out predictions and true labels
     classes_pred = np.asarray(predicted)
     classes_true = np.asarray(true)
+
     print(classes_pred.shape)
     print(classes_true.shape)
+
     cnf_matrix = confusion_matrix(
                                     classes_true, 
                                     classes_pred, 
                                     # labels = classes
                                 )
-    plot_confusion_matrix(cnf_matrix)
+    plot_confusion_matrix(cnf_matrix, figure_name)
 
 
 #%%
@@ -140,38 +145,45 @@ def evaluate_model(models, X, y, cv, scoring):
 
 # Plotting function for algorithm comparison
 
-def plot_algortm_comparison(results, names):
-    # transform the vectors into pandas dataframe
-    results_df = pd.DataFrame(results,
-                              columns = (0, 1, 2, 3, 4)
-                              ).T # columns should correspond to the number of folds, k = 5
+def plot_algorithm_comparison(results, names):
+    """
+    Plots a boxplot comparing algorithm performance based on accuracy.
 
+    Parameters:
+    - results: List of lists or 2D array-like, where each sublist contains accuracy scores for a model.
+    - names: List of model names corresponding to the columns in `results`.
+
+    Returns:
+    - fig: The matplotlib Figure object containing the plot.
+    """
+    # Transform the results into a pandas DataFrame
+    results_df = pd.DataFrame(results).T  # Transpose to match the expected format
     results_df.columns = names
-    # melt data frame into a long format.
-    results_df = pd.melt(results_df) 
-    # rename columns
-    results_df.rename(columns = {'variable':'Model', 'value':'Accuracy'},
-                      inplace = True)
 
+    # Melt the DataFrame into a long format
+    results_df = pd.melt(results_df, var_name='Model', value_name='Accuracy')
 
-    # Plotting the algorithm selection
-
-    plt.figure(figsize = (5, 4))
-
+    # Create the plot
+    fig, ax = plt.subplots(figsize=(5, 4))
     sns.boxplot(
-                    x = 'Model',
-                    y = 'Accuracy',
-                    data = results_df,
-                    hue = 'Model',
-                    palette = 'colorblind'
-                )
-    # sns.boxplot(x = names, y = results, width = .4)
-    sns.despine(offset = 5, trim = False)
-    plt.xticks(rotation = 90)
-    plt.yticks(np.arange(0.0, 1.0 + .1, step = 0.2))
-    plt.ylabel('Accuracy', weight = 'bold')
-    plt.xlabel(" ")
-    plt.legend().remove()
-    plt.tight_layout()
+        x='Model',
+        y='Accuracy',
+        data=results_df,
+        hue='Model',
+        palette='colorblind',
+        ax=ax
+    )
+    sns.despine(offset=5, trim=False)
+    ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+    ax.set_yticks(np.arange(0.0, 1.1, step=0.2))
+    ax.set_ylabel('Accuracy', weight='bold')
+    ax.set_xlabel("")
+    
+    # Check if legend exists before removing it
+    if ax.legend_:
+        ax.legend_.remove()
+    
+    fig.tight_layout()
+    fig.tight_layout()
 
-    return plt
+    return fig

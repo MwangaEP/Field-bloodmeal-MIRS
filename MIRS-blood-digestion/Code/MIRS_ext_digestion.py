@@ -2,6 +2,7 @@
 import os
 import io
 import shap
+import json
 from time import time
 
 import numpy as np 
@@ -36,6 +37,7 @@ from sklearn.metrics import (
     )
 
 from imblearn.under_sampling import RandomUnderSampler
+from sklearn.inspection import permutation_importance
 
 from sklearn import decomposition
 from sklearn.pipeline import Pipeline
@@ -55,7 +57,7 @@ from my_functions import (
     plot_confusion_matrix, 
     visualize,
     evaluate_model,
-    plot_algortm_comparison
+    plot_algorithm_comparison
 )
 
 import matplotlib.pyplot as plt # for making plots
@@ -81,7 +83,6 @@ blood_meal_lab_df = pd.read_csv(
     os.path.join("..", "Data", "Blood_meal_lab.dat"), 
     delimiter= '\t'
 )
-
 
 blood_meal_lab_df['Cat3'] = blood_meal_lab_df['Cat3'].str.replace('BF', 'Bovine')
 blood_meal_lab_df['Cat3'] = blood_meal_lab_df['Cat3'].str.replace('HF', 'Human')
@@ -144,8 +145,7 @@ kf = KFold(n_splits = num_folds,
 models = []
 models.append(('KNN', KNeighborsClassifier()))
 
-models.append(('LR', LogisticRegression(multi_class = 'ovr',
-                                        max_iter = 2000,
+models.append(('LR', LogisticRegression(max_iter = 2000,
                                         random_state = seed)))
 
 models.append(('SVM', SVC(kernel = 'linear',
@@ -170,70 +170,64 @@ models.append(("MLP", MLPClassifier(random_state=seed, max_iter = 3500,
 # evaluate and Plot results for algorithm comparison
 
 results, names = evaluate_model(models, X_scl, y_encoded, kf, scoring)
-plot_algortm_comparison(results, names)
 
+#%%
+fig = plot_algorithm_comparison(results, names)
 
-# # save the plot
-# plt.savefig(
-#     os.path.join("..", "Results", "model_comparison.png"),
-#     dpi = 500,
-#     bbox_inches = "tight"
-# )
-
+# save the plot
+fig.savefig(
+    os.path.join("..", "Results", "model_comparison.png"),
+    dpi = 500,
+    bbox_inches = "tight"
+)
 
 #%%
 
 # big LOOP
 # TUNNING THE SELECTED MODEL
 
-num_rounds = 1 # increase this to 5 or 10 once code is bug-free
+num_rounds = 5 # increase this to 5 or 10 once code is bug-free
 scoring = 'accuracy' # score model accuracy
 
 # prepare matrices of results
 kf_results = pd.DataFrame() # model parameters and global accuracy score
-shap_importance_df = pd.DataFrame() # model coef for each iteration
+svc_coef_df = pd.DataFrame() # model coef for each iteration
 kf_per_class_results = [] # per class accuracy scores
 save_predicted, save_true = [], [] # save predicted and true values for each loop
 all_predicted_probs = [] # save predicted probabilities for each loop
 
 start = time()
 
-# Create the MLP model with linear kernel
-classifier = MLPClassifier(
-    max_iter = 3500,
-    solver = 'sgd',
-    early_stopping = True,
-    random_state = seed
-)
+# Specify model
+# Define the XGBoost model for species prediction
+# classifier = XGBClassifier()
+
+# # set hyparameter
+
+# estimators = [500, 1000]
+# rate = [0.05, 0.10, 0.15, 0.20, 0.30]
+# depth = [2, 3, 4, 5, 6, 8, 10, 12, 15]
+# child_weight = [1, 3, 5, 7]
+# gamma = [0.0, 0.1, 0.2, 0.3, 0.4]
+# bytree = [0.1, 0.2, 0.3, 0.4, 0.5, 0.7]
+
+# random_grid = {
+#               'n_estimators': estimators, 
+#               'learning_rate': rate, 
+#               'max_depth': depth,
+#               'min_child_weight': child_weight, 
+#               'gamma': gamma, 
+#               'colsample_bytree': bytree
+#               }
 
 # Define the parameter grid
 random_grid = {
-
-    # Network architecture
-    "hidden_layer_sizes": [
-        (50,), (100,), (200,),
-        (50, 50), (100, 50), (100, 100),
-        (200, 100)
-    ],
-
-    # Activation functions
-    "activation": ["relu", "tanh"],
-
-    # Solver choice
-    "solver": ["adam", "sgd"],
-
-    # Regularization
-    "alpha": loguniform(1e-5, 1e-1),
-
-    # Learning rate
-    "learning_rate_init": loguniform(1e-4, 1e-1),
-
-    # SGD-only
-    "learning_rate": ["constant", "adaptive"],
-
-    # Batch size
-    "batch_size": [32, 64, 128, 256]
+    'C': [0.001, 0.01, 0.1, 0.2, 0.4, 0.5, 0.6, 0.8, 1, 10, 100, 1000],
+    'class_weight': ['balanced', None]  # To handle potential class imbalance
 }
+
+# Create the SVC model with linear kernel
+classifier = SVC(kernel='linear', probability=True)
 
 for round in range (num_rounds):
     SEED = np.random.randint(0, 8147)
@@ -296,6 +290,18 @@ for round in range (num_rounds):
         predicted_probs = best_classifier.predict_proba(X_val)
         all_predicted_probs.append(predicted_probs)  # Save the probabilities for the current fold
 
+        # append feauture importances
+        coef_table = pd.Series(best_classifier.coef_[0], X.columns)
+        coef_table = pd.DataFrame(coef_table)
+        svc_coef_df = pd.concat(
+            [
+                svc_coef_df, 
+                coef_table
+            ],
+            axis = 1,
+            ignore_index = True
+        )
+
         # zip predictions for all rounds for plotting averaged confusion matrix
             
         for predicted, true in zip(y_pred, y_val):
@@ -303,65 +309,35 @@ for round in range (num_rounds):
             save_true.append(true)
 
         # =====================================================
-        # ===================== SHAP =========================
+        # ===================== permutation importance ========
         # =====================================================
 
-        # # sample to keep SHAP fast
-        # X_bg = X_train_set[
-        #     np.random.choice(
-        #         X_train_set.shape[0],
-        #         size=min(100, X_train_set.shape[0]),
-        #         replace=False
-        #     )
-        # ]
-
-        # X_shap = X_val[
-        #     np.random.choice(
-        #         X_val.shape[0],
-        #         size=min(200, X_val.shape[0]),
-        #         replace=False
-        #     )
-        # ]
-
-        # explainer = shap.KernelExplainer(
-        #     best_classifier.predict_proba,
-        #     X_bg
+        # perm = permutation_importance(
+        #     best_classifier,
+        #     X_val,
+        #     y_val, 
+        #     n_repeats = 10,
+        #     scoring = "accuracy",
+        #     random_state = seed,
+        #     n_jobs = -1
         # )
 
-        explainer = shap.KernelExplainer(
-            best_classifier.predict_proba,
-            X_train_set
-        )
+        # iter_perm_df = pd.DataFrame({
+        #     "feature": X.columns,
+        #     "importance": perm.importances_mean,
+        #     "round": round}
+        # )
 
-        shap_values = explainer.shap_values(
-            X_val, 
-            nsamples = 100
-        )
-
-        # Binarry vs multiclass
-        if isinstance(shap_values, list):
-            shap_vals = shap_values[1]
-        else:
-            shap_vals = shap_values
-
-        mean_abs_shap = np.mean(np.abs(shap_vals), axis = 0)
-
-        iter_shap_df = pd.DataFrame({
-            "feature": X.columns,
-            "shap_importance": mean_abs_shap,
-            "round": round}
-        )
-
-        shap_importance_df = pd.concat(
-            [
-                shap_importance_df, 
-                iter_shap_df
-            ],
-            ignore_index = True
-        )
+        # perm_importance_df = pd.concat(
+        #     [
+        #         perm_importance_df,
+        #         iter_perm_df
+        #     ],
+        #     ignore_index = True
+        # )
         
         # =====================================================
-        # -------------------reults summary--------------------
+        # -------------------results summary--------------------
 
         local_cm = confusion_matrix(y_val, y_pred)
         local_report = classification_report(y_val, y_pred)
@@ -373,7 +349,8 @@ for round in range (num_rounds):
                                                 ("TEST",str(test_index)),
                                                 ("CM", local_cm), 
                                                 ("Classification report", local_report), 
-                                                ("y_val", y_val)
+                                                ("y_val", y_val),
+                                                # ("Feature importances", local_feat_impces_species.to_dict())
                                             ]
                                         ).T
             
@@ -398,17 +375,178 @@ elapsed = time() - start
 print("Time elapsed: {0:.2f} minutes ({1:.1f} sec)".format(
     elapsed / 60, elapsed))
 
-
 #%%
-# After the loop: aggregate SHAP results
-shap_summary = (
-    shap_importance_df
-    .groupby("feature")["shap_importance"]
-    .mean()
-    .sort_values(ascending=False)
-    .reset_index()
+
+# Perfom SHAP on top 100 features only because it is computational feasible and statistical interpretable
+
+# top_features = (
+#      perm_importance_df
+#      .groupby("feature")["importance"]
+#      .mean()
+#      .sort_values(ascending = False)
+#      .head(100)
+#      .index
+# )
+
+X_val_2 = pd.DataFrame(X_val, columns=X.columns)
+
+# Use all features (no reduction) in the SHAP computation
+X_val_reduced = X_val_2[:100]  # Use first 100 samples (or any subset)
+
+# Set up SHAP explainer with the full feature set
+explainer = shap.KernelExplainer(
+     best_classifier.predict_proba,
+     X_val_reduced  # Pass all 100 samples with all features
 )
 
+# Compute SHAP values for the 100 samples
+shap_values = explainer.shap_values(X_val_reduced)
+
+# Check the shape of shap_values
+print(f"Shape of SHAP values: {shap_values.shape}")
+
+# Get the SHAP values for the class you're interested in (class 1 for example)
+shap_values_class_1 = shap_values[:, :, 1]  # or shap_values[0] if you're interested in class 0
+
+# Check the shape of shap_values_class_1 to make sure it's (num_samples, num_features) (it should be (100, 1665))
+print(f"Shape of SHAP values for class 1: {shap_values_class_1.shape}")
+
+# Compute the mean absolute SHAP values for each feature across all samples (axis=0)
+mean_shap_values = np.mean(np.abs(shap_values_class_1), axis=0)
+
+# Now, mean_shap_values should have length equal to the number of features
+print(f"Length of mean_shap_values: {len(mean_shap_values)}")
+
+# Check if lengths match
+if len(mean_shap_values) == len(X_val_2.columns):
+    shap_importance = pd.DataFrame({
+        'feature': X_val_2.columns,
+        'mean_shap_value': mean_shap_values
+    })
+    
+    # Sort by mean SHAP values and select top 20 or 30 important features
+    top_shap_features = shap_importance.sort_values(
+        by='mean_shap_value',
+          ascending=False).head(30)
+
+    # Display or use the top important features
+    print(top_shap_features)
+else:
+    print("The number of features and SHAP values do not match!")
+
+#%%
+# Ensure we are using the feature names and SHAP values
+top_features = top_shap_features['feature'].astype(int).values  # Feature names from the top SHAP features DataFrame
+# # Get SHAP values for all samples, class 1 (assuming you're interested in class 1)
+# # We need to match features to their corresponding SHAP values.
+# # So, let's select SHAP values for class 1 and the relevant features.
+# Ensure top_feature_ids are strings (since X_val_2.columns are strings)
+top_feature_names = [str(f) for f in top_features]
+
+# Check if all top_feature_names are present in X_val_2.columns
+missing_features = [f for f in top_feature_names if f not in X_val_2.columns]
+if missing_features:
+    print(f"Missing features: {missing_features}")
+
+# Proceed with selecting features that are available in X_val_2.columns
+valid_top_features = [f for f in top_feature_names if f in X_val_2.columns]
+
+# Get SHAP values for the selected features
+top_feature_indices = [X_val_2.columns.get_loc(f) for f in valid_top_features]
+shap_values_class_1 = shap_values[:, top_feature_indices, 1]
+
+# Select a sample index (e.g., first sample) for which you want to create the waterfall plot
+sample_idx = 0  # Change to the desired sample index
+
+# Get the SHAP values for the selected sample
+sample_shap_values = shap_values_class_1[sample_idx]
+
+# Get the corresponding feature values from the dataset (for the selected sample)
+sample_data = X_val_2.iloc[sample_idx, top_feature_indices]
+
+# Initialize JS for plotting (necessary for interactive plots in Jupyter Notebooks)
+shap.initjs()
+
+# Create a SHAP Explanation object for the waterfall plot
+explanation = shap.Explanation(values=sample_shap_values,  # SHAP values for the selected sample
+                                base_values=explainer.expected_value[1],  # Expected value for class 1
+                                data=sample_data,  # The data for the selected sample
+                                feature_names=top_feature_names)  # Feature names for the top features
+
+# Generate the SHAP waterfall plot for the selected sample
+shap.waterfall_plot(explanation)
+
+#%%
+# summarizing SVC coefficients
+
+sss_coef_2 = svc_coef_df
+sss_coef_2.dropna(axis = 1, inplace = True)
+sss_coef_2["coef mean"] = sss_coef_2.mean(axis=1)
+sss_coef_2["coef sem"] = sss_coef_2.sem(axis=1)
+# sss_coef_2.to_csv("coef_repeatedCV_coef.csv")
+
+#%%
+
+# plotting coefficients
+n_features = 25
+
+# sort the coefficients
+sss_coef_2.sort_values(
+    by = "coef mean", 
+    ascending = False, 
+    inplace = True
+)
+
+# select the top 25 and bottom 25 coefficients
+coef_data = sss_coef_2.drop(
+    [
+        "coef sem", 
+        "coef mean"
+    ], 
+    axis = 1
+).T
+
+coef_plot_data = coef_data.iloc[:,:].drop(
+    coef_data.columns[n_features:-n_features], 
+    axis = 1
+)
+
+
+# Plotting 
+
+plt.figure(figsize = (5,16))
+sns.barplot(
+                data = coef_plot_data, 
+                orient = "h", 
+                palette = "plasma", 
+                capsize = .2
+            )
+
+plt.ylabel("Wavenumbers", weight = "bold")
+plt.xlabel("Coefficients", weight = "bold")
+# plt.savefig(os.path.join("..", "Results", "svc_coef.png"), 
+#             dpi = 500, 
+#             bbox_inches = "tight"
+#         )
+
+#%%
+
+# save wavenumbers for the top positive and negative coefficients
+
+n_features_2 = 50
+coef_svc_data = coef_data.iloc[:,:].drop(
+    coef_data.columns[n_features_2:-n_features_2], 
+    axis = 1
+)
+
+with open(
+    os.path.join("..", "Results", "top_svc_coefficients_wavenumbers.txt"),
+     'w'
+     ) as outfile:
+     json.dump(
+         coef_svc_data.columns.tolist(), 
+         outfile
+         )
 
 #%%
 # Now you can use all_predicted_probs to plot the ROC curve
@@ -435,78 +573,26 @@ plt.legend(loc='lower right')
 plt.grid(False)
 plt.tight_layout()
 
-# Save the plot
-plt.savefig(
-    os.path.join("..", "Results", "roc_curve.png"), 
-    dpi=500, 
-    bbox_inches='tight'
-)
+# # Save the plot
+# plt.savefig(
+#     os.path.join("..", "Results", "roc_curve.png"), 
+#     dpi=500, 
+#     bbox_inches='tight'
+# )
 
 #%%
 
 # plot confusion averaged for the validation set
 
 classes = np.unique(np.sort(y_val))
-figure_name = 'baseline_cm'
+# figure_name = "baseline_cm"
 
 visualize(
-    figure_name, 
+    "baseline_cm", 
     save_predicted, 
     save_true
 )
 
-#%%
-# summarizing logistic regression coefficients
-
-sss_coef_2 = lr_coef_df
-sss_coef_2.dropna(axis = 1, inplace = True)
-sss_coef_2["coef mean"] = sss_coef_2.mean(axis=1)
-sss_coef_2["coef sem"] = sss_coef_2.sem(axis=1)
-# sss_coef_2.to_csv("coef_repeatedCV_coef.csv")
-
-#%%
-
-# plotting coefficients
-n_features = 25
-
-# sort the coefficients
-sss_coef_2.sort_values(
-    by = "coef mean", 
-    ascending = False, 
-    inplace = True
-)
-
-# select the top 25 and bottom 25 coefficients
-coef_plot_data = sss_coef_2.drop(
-    [
-        "coef sem", 
-        "coef mean"
-    ], 
-    axis = 1
-).T
-
-coef_plot_data = coef_plot_data.iloc[:,:].drop(
-    coef_plot_data.columns[n_features:-n_features], 
-    axis = 1
-)
-
-
-# Plotting 
-
-plt.figure(figsize = (5,16))
-sns.barplot(
-                data = coef_plot_data, 
-                orient = "h", 
-                palette = "plasma", 
-                capsize = .2
-            )
-
-plt.ylabel("Wavenumbers", weight = "bold")
-plt.xlabel("Coefficients", weight = "bold")
-plt.savefig(os.path.join("..", "Results", "lgr_coef.png"), 
-            dpi = 500, 
-            bbox_inches = "tight"
-        )
 
 #%%
 # Making prediction on the blood meal hours data
@@ -892,12 +978,12 @@ plt.ylim(0.0, 1.0)  # Set y-axis limits
 # Customize the appearance
 plt.tight_layout()  # Ensure everything fits well
 
-# Save the plot
-plt.savefig(
-    os.path.join("..", "Results", "accuracy_bhours_line.png"), 
-    dpi=500, 
-    bbox_inches='tight'
-)
+# # Save the plot
+# plt.savefig(
+#     os.path.join("..", "Results", "accuracy_bhours_line.png"), 
+#     dpi=500, 
+#     bbox_inches='tight'
+# )
 
 # %%
 # Get probabilities for the positive class (Human)
@@ -954,10 +1040,10 @@ plt.legend(loc='lower right')
 plt.tight_layout()
 
 # Save the plot
-plt.savefig(
-    os.path.join("..", "Results", "roc_curves_bhours.png"), 
-    dpi=500, 
-    bbox_inches='tight'
-)
+# plt.savefig(
+#     os.path.join("..", "Results", "roc_curves_bhours.png"), 
+#     dpi=500, 
+#     bbox_inches='tight'
+# )
 
 # %%

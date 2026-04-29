@@ -1,21 +1,19 @@
 #%%
-# Import libraries
+# ----------------------------------------------------------------------------
+# Imports
+# -----------------------------------------------------------------------------
 
 import os
 import io
-import json
 import joblib
 from time import time
-
-from itertools import cycle
-import random as rn
 
 import numpy as np 
 import pandas as pd
 
-from random import randint
 from collections import Counter 
 
+# Custom utility functions
 from MLP_functions import (
     build_folder, 
     log_data, 
@@ -26,36 +24,20 @@ from MLP_functions import (
     find_mean_from_combined_dicts
 )
 
-from sklearn.model_selection import (
-    ShuffleSplit, 
-    train_test_split, 
-    KFold
-) 
-from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import MultiLabelBinarizer
 from sklearn.metrics import (
-    confusion_matrix, 
     classification_report, 
+    accuracy_score
 )
 
-from sklearn.metrics import accuracy_score
-
 import tensorflow as tf
-from tensorflow import keras
-from keras import regularizers
-from keras import initializers
-from keras.models import Sequential, Model
-from keras import layers, metrics
-from keras.layers import Input
-from keras.layers import Concatenate
-from keras.layers import Dense, Dropout, Activation, Flatten
+from keras.layers import Dense, Dropout, Flatten
 from keras.layers import BatchNormalization
-from keras.layers import Conv1D, MaxPooling1D
-from keras.models import model_from_json, load_model
-from keras.regularizers import *
+from keras.layers import Conv1D
 from keras.optimizers import SGD
 from keras.callbacks import CSVLogger
-from keras import backend as K
+from keras.models import load_model
 
 import matplotlib.pyplot as plt # for making plots
 import seaborn as sns
@@ -78,10 +60,6 @@ plt.rcParams["figure.figsize"] = [6,4]
 # set working directory
 
 outdir = os.path.join("..", "Results")
-build_folder(outdir, False)  
-
-
-# Name a folder for the outputs to go into
 
 savedir = (outdir + r"\CNN_TL")            
 build_folder(savedir, False)
@@ -99,17 +77,19 @@ scaler = joblib.load(
     )
 
 # Load the trained CNN model from disk
-clf = tf.keras.models.load_model(
+clf = load_model(
     os.path.join(
         "..", 
         "Results", 
-        "lCNN_attentionPooling_0_3_Model.keras"
+        "CNN",
+        "lCNN_base_6hr_0_2_Model.keras"
         )
     )
 
 #%%
-# Making prediction on the blood meal hours data
-# Load hours blood meal data
+# =============================================================================
+# Load data (blood meal by hours)
+# =============================================================================
 
 blood_hours_df = pd.read_csv(
     os.path.join(
@@ -130,9 +110,8 @@ blood_hours_df.head()
 #%%
 
 # count the number of blood hours post feeding
-Counter(blood_hours_df['Cat4'])
+print(f'Hours count: {Counter(blood_hours_df["Cat4"])}')
 
-#%% 
 # filter data with blood meal hours (To be used for model testing)
 blood_6hours = blood_hours_df[blood_hours_df['Cat4'] == '6H']
 blood_12hours = blood_hours_df[blood_hours_df['Cat4'] == '12H']
@@ -225,45 +204,48 @@ X_48h_scl = scaler.transform(np.asarray(X_48h))
 # Create a function to predict blood meal hours using the trained CNN model. 
 
 def predict_bloodmeal_hours(X_data, y_data, model):
-    
     """
-    Predicts blood meal source using trained model
+    Predicts blood meal host source using a trained Keras model.
+
     Parameters:
-    X_data (array-like): Scaled feature data
-    y_data (array-like): True labels
-    model (keras.Model): Trained Keras model for prediction
+    -----------
+    X_data : array-like
+        Scaled feature data (already transformed by the scaler).
+    y_data : array-like
+        True host labels (e.g., 'Bovine', 'Human').
+    model : keras.Model
+        Trained Keras model for prediction.
 
     Returns:
-    dict: Dictionary containing accuracy and classification report
-
+    --------
+    y_predictions : np.ndarray
+        Predicted class probabilities for each sample.
+    y_val : np.ndarray
+        One-hot encoded true labels.
+    classes_default : list
+        List containing the unique class names.
     """
-    # prepare Y_values for the transfer learning - training
-
+    # Binarize labels using MultiLabelBinarizer for one-hot encoding
     host_list = [[host] for host in y_data]
     hosts_trans = MultiLabelBinarizer().fit_transform(host_list)
     y_classes = list(np.unique(host_list))
-    print('Y classes ', y_classes)
-    # print('y classes binarized', hosts_trans)
+    print('Y classes:', y_classes)
 
     labels_default, classes_default = [hosts_trans], [y_classes]
 
-    # reshape data to match the training shape
+    # Reshape input to (samples, timesteps, 1) as required by Conv1D
     X_data_2 = X_data.reshape(X_data.shape[0], X_data.shape[1], 1)
-    print('X data shape for prediction', X_data_2.shape) 
-    y_val = np.squeeze(labels_default) # remove any single dimension entries from the arrays
-    # print(type(y_val))
-    print('Y validation', y_val)
+
+    # Remove redundant single-dimension entries from the label array
+    y_val = np.squeeze(labels_default)
+
+    # Generate predictions
     y_predictions = model.predict(X_data_2)
 
-    # computes the loss based on the X_input you passed, along with any other metrics requested in the metrics param 
-    # when model was compiled
- 
-    score = model.evaluate(X_data_2, y_val, verbose = 1)
+    # Evaluate model loss and accuracy on the provided data
+    score = model.evaluate(X_data_2, y_val, verbose=1)
     print('Test loss:', score[0])
     print('Test accuracy:', score[1])
-
-    # predictions = np.argmax(y_predictions, axis = -1)
-    # y_true = np.argmax(y_val, axis = -1)
 
     return y_predictions, y_val, classes_default
 
@@ -448,51 +430,57 @@ def train_evaluate_tf(model, scaler, X, y, X_val, y_val):
 
     """
 
-    #----------------------------------------------------------
-    # Freeze convolutional layers
-    #---------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # Freeze the feature extractor (Conv blocks) — keep Dense blocks and
+    # the output head trainable for fine-tuning.
+    #
+    # Name-based freezing is used because the base model assigns consistent
+    # prefixes: 'Conv', 'BN_conv', 'MaxPool', 'SpatialDrop' for extractor
+    # layers vs. 'Dense', 'BN_dense', 'Dropout', 'output_head' for the
+    # classifier head.  Freezing by isinstance(BatchNormalization) would
+    # incorrectly freeze BN_dense layers that should remain trainable.
+    # -----------------------------------------------------------------------
+
+    FROZEN_PREFIXES = ('Conv', 'BN_conv', 'MaxPool', 'SpatialDrop')
 
     for layer in model.layers:
-        if isinstance(layer, Conv1D):
-            layer.trainable = False
-        elif isinstance(layer, BatchNormalization):
-            layer.trainable = False # recommended for TL stability
+        if any(layer.name.startswith(tag) for tag in FROZEN_PREFIXES):
+            layer.trainable = False  # freeze feature extractor
         else:
-            layer.trainable = True
-    
+            layer.trainable = True   # fine-tune Dense blocks + output head
+
+    # Log trainability for inspection
+    for layer in model.layers:
+        print(f"  {layer.name:30s}  trainable={layer.trainable}")
 
     sgd_tl = SGD(
-        learning_rate = 0.00001, 
-        # decay = 1e-5, 
-        momentum = 0.9, 
-        nesterov = True, 
+        learning_rate = 0.00001,
+        momentum = 0.9,
+        nesterov = True,
         clipnorm = 1.
     )
 
-    cce_tl = 'categorical_crossentropy'
-
+    # Use 'accuracy' (not 'acc') to match the base model compilation and
+    # ensure history keys are consistent with plot_tl_accuracy_history.
     model.compile(
-        loss = cce_tl, 
-        metrics = ['acc'], 
+        loss = 'categorical_crossentropy',
+        metrics = ['accuracy'],
         optimizer = sgd_tl
     )
 
-    # scale X and X_val
+    # Scale features using the pre-fitted scaler
     X = scaler.transform(X)
     X_val = scaler.transform(X_val)
 
-    # prepare Y_values for the transfer learning - training
-
+    # One-hot encode training labels
     host_t = [[host] for host in y]
     hosts_t = MultiLabelBinarizer().fit_transform(host_t)
-    y_classes_t = list(np.unique(host_t))
-    labels_default_t, classes_default_t = [hosts_t], [y_classes_t]
+    labels_default_t = [hosts_t]
 
-    # prepare Y_values for the transfer learning - validation
+    # One-hot encode validation labels
     host_val = [[host] for host in y_val]
     hosts_val = MultiLabelBinarizer().fit_transform(host_val)
-    y_classes_val = list(np.unique(host_val))
-    labels_default_val, classes_default_val = [hosts_val], [y_classes_val]
+    labels_default_val = [hosts_val]
 
     # reshape data, and train the model
     X = X.reshape(X.shape[0], X.shape[1], 1)
@@ -552,287 +540,160 @@ print('Run time : {} m'.format((end_time-start_time)/60))
 print('Run time : {} h'.format((end_time-start_time)/3600))
 
 #%%
-# Predict hourly blood meal source using the transfer learning model
-# 6 hours data
+# =============================================================================
+# Predict blood meal host source at each digestion time point (6h, 12h, 24h, 48h)
+# using the transfer learning model and save classification reports to disk
+# =============================================================================
 
-X_test_6h = np.asarray(test_6h.drop('blood_meal', axis = 1))
+# Map each time point label to its corresponding held-out test DataFrame
+hour_datasets = {
+    "6h":  test_6h,
+    "12h": test_12h,
+    "24h": test_24h,
+    "48h": test_48h,
+}
 
-# target variable
-y_test_6h = np.asarray(test_6h['blood_meal'])
+# Stores (true, predicted) arrays per time point for later accuracy summary
+predictions_store = {}
 
-# scale the data
-X_test_6h_scl = scaler.transform(X_test_6h)
+for label, test_df in hour_datasets.items():
 
-# Predictions
-pred_test_6h, true_test_6h, classes_test_6h = predict_bloodmeal_hours(
-    X_test_6h_scl, 
-    y_test_6h, 
-    transfer_model  
-)
+    # Separate features and target from the test split
+    X_test = np.asarray(test_df.drop('blood_meal', axis=1))
+    y_test = np.asarray(test_df['blood_meal'])
 
-# Visualize the confusion matrix
-visualize(
-    1,
-    savedir, 
-    "tl_model",
-    "6hrs_bloodmeal",
-    classes_test_6h,
-    pred_test_6h,
-    true_test_6h
-)
+    # Apply the same scaler used during base model training
+    X_test_scl = scaler.transform(X_test)
 
-# Calculate classification report
-cr_6h = classification_report(
-    np.argmax(true_test_6h, axis = -1), 
-    np.argmax(pred_test_6h, axis = -1),
-    target_names = ['Bovine', 'Human']
-)
+    # Generate predictions using the transfer learning model
+    pred, true, classes = predict_bloodmeal_hours(X_test_scl, y_test, transfer_model)
 
-# save classification report to disk 
-cr_6h = pd.read_fwf(io.StringIO(cr_6h), header = 0)
-cr_6h = cr_6h.iloc[1:]
-cr_6h.to_csv(
-    os.path.join(
-        "..",
-        "Results", 
-        "CNN_TL", 
-        "cr_report_TL_6h_bloodmeal.csv"
-        )
+    # Store for accuracy summary later
+    predictions_store[label] = (true, pred)
+
+    # Plot and save confusion matrix
+    visualize(
+        1,
+        savedir,
+        "tl_model",
+        f"{label}_bloodmeal",
+        classes,
+        pred,
+        true
     )
 
-#%%
+    # Generate classification report (Bovine vs Human)
+    cr = classification_report(
+        np.argmax(true, axis=-1),
+        np.argmax(pred, axis=-1),
+        target_names=['Bovine', 'Human']
+    )
 
-# 12 hours data
-X_test_12h = np.asarray(test_12h.drop('blood_meal', axis = 1))
-
-# target variable
-y_test_12h = np.asarray(test_12h['blood_meal'])
-
-# scale the data
-X_test_12h_scl = scaler.transform(X_test_12h)
-
-# Predictions
-pred_test_12h, true_test_12h, classes_test_12h = predict_bloodmeal_hours(
-    X_test_12h_scl, 
-    y_test_12h, 
-    transfer_model  
-)
-
-# Visualize the confusion matrix
-visualize(
-    1,
-    savedir, 
-    "tl_model",
-    "12hrs_bloodmeal",
-    classes_test_12h,
-    pred_test_12h,
-    true_test_12h
-)
-
-# Calculate classification report
-cr_12h = classification_report(
-    np.argmax(true_test_12h, axis = -1), 
-    np.argmax(pred_test_12h, axis = -1),
-    target_names = ['Bovine', 'Human']
-)
-
-# save classification report to disk 
-cr_12h = pd.read_fwf(io.StringIO(cr_12h), header = 0)
-cr_12h = cr_12h.iloc[1:]
-cr_12h.to_csv(
-    os.path.join("..", 
-                 "Results", 
-                 "CNN_TL", 
-                 "cr_report_TL_12h_bloodmeal.csv"
-                 )
-)
-
+    # Parse and save classification report as CSV
+    cr_df = pd.read_fwf(io.StringIO(cr), header=0).iloc[1:]
+    cr_df.to_csv(
+        os.path.join("..", "Results", "CNN_TL", f"cr_report_TL_{label}_bloodmeal.csv")
+    )
+    print(f"Classification report saved for {label} time point.")
 
 #%%
-# 24 hours data
-X_test_24h = np.asarray(test_24h.drop('blood_meal', axis = 1))
+# =============================================================================
+# Plot training history for the transfer learning model
+# =============================================================================
 
-# target variable
-y_test_24h = np.asarray(test_24h['blood_meal'])
-
-# scale the data
-X_test_24h_scl = scaler.transform(X_test_24h)
-
-# Predictions
-pred_test_24h, true_test_24h, classes_test_24h = predict_bloodmeal_hours(
-    X_test_24h_scl, 
-    y_test_24h, 
-    transfer_model  
-)
-
-# Visualize the confusion matrix
-visualize(
-    1,
-    savedir, 
-    "tl_model",
-    "24hrs_bloodmeal",
-    classes_test_24h,
-    pred_test_24h,
-    true_test_24h
-)
-
-# Calculate classification report
-cr_24h = classification_report(
-    np.argmax(true_test_24h, axis = -1), 
-    np.argmax(pred_test_24h, axis = -1),
-    target_names = ['Bovine', 'Human']
-)
-
-# save classification report to disk 
-cr_24h = pd.read_fwf(io.StringIO(cr_24h), header = 0)
-cr_24h = cr_24h.iloc[1:]
-cr_24h.to_csv(
-    os.path.join("..", 
-                 "Results", 
-                 "CNN_TL", 
-                 "cr_report_TL_24h_bloodmeal.csv"
-                 )
-)
-
-#%%
-# 48 hours data
-X_test_48h = np.asarray(test_48h.drop('blood_meal', axis = 1))
-
-# target variable
-y_test_48h = np.asarray(test_48h['blood_meal'])
-
-# scale the data
-X_test_48h_scl = scaler.transform(X_test_48h)
-
-# Predictions
-pred_test_48h, true_test_48h, classes_test_48h = predict_bloodmeal_hours(
-    X_test_48h_scl, 
-    y_test_48h, 
-    transfer_model  
-)
-
-# Visualize the confusion matrix
-visualize(
-    1,
-    savedir, 
-    "tl_model",
-    "48hrs_bloodmeal",
-    classes_test_48h,
-    pred_test_48h,
-    true_test_48h
-)
-
-# Calculate classification report
-cr_48h = classification_report(
-    np.argmax(true_test_48h, axis = -1), 
-    np.argmax(pred_test_48h, axis = -1),
-    target_names = ['Bovine', 'Human']
-)
-
-# save classification report to disk 
-cr_48h = pd.read_fwf(io.StringIO(cr_48h), header = 0)
-cr_48h = cr_48h.iloc[1:]
-cr_48h.to_csv(
-    os.path.join("..", 
-                 "Results", 
-                 "CNN_TL", 
-                 "cr_report_TL_48h_bloodmeal.csv"
-                 )
-)
-
-#%%
-
-# Plot training history for transfer learning model
 def plot_tl_accuracy_history(history):
-    plt.figure(figsize=(6, 4))
+    """
+    Plots and saves training vs. validation accuracy over epochs.
 
-    plt.plot(history.history['acc'], label='accuracy')
-    plt.plot(history.history['val_acc'], label='val_accuracy')
+    Parameters:
+    -----------
+    history : keras.callbacks.History
+        History object returned by model.fit().
+    """
+    fig, ax = plt.subplots(figsize=(6, 4))
 
-    plt.xlabel('Epochs')
-    plt.ylabel('Accuracy')
-    plt.yticks(np.arange(0.0, 1.0 + 0.05, step = 0.2))
-    plt.legend(loc = 'lower right')
-    plt.grid(False)
+    ax.plot(history.history['accuracy'], label='accuracy')
+    ax.plot(history.history['val_accuracy'], label='Val accuracy')
 
-    plt.tight_layout()
+    ax.set_xlabel('Epochs')
+    ax.set_ylabel('Accuracy')
+    ax.set_yticks(np.arange(0.0, 1.05, step=0.2))
+    ax.legend(loc='lower right')
+    ax.grid(False)
 
-    plt.savefig(
-        os.path.join("..", 
-                     "Results", 
-                     "CNN_TL", 
-                     "tl_accuracy_history.png"
-                    ), 
-        dpi = 500, 
-        bbox_inches = "tight"
+    fig.tight_layout()
+    fig.savefig(
+        os.path.join("..", "Results", "CNN_TL", "tl_accuracy_history.png"),
+        dpi=500,
+        bbox_inches="tight"
     )
     plt.show()
 
-     
 
+# Apply plot styling before calling the function
 sns.set(
-        context = "paper",
-        style = "white",
-        palette = "deep",
-        font_scale = 1.5,
-        color_codes = True,
-        rc = ({"font.family": "Dejavu Sans"})
-    )
+    context="paper",
+    style="white",
+    palette="deep",
+    font_scale=1.5,
+    color_codes=True,
+    rc={"font.family": "Dejavu Sans"}
+)
 
 plot_tl_accuracy_history(history)
 
 
 #%%
-# Collect all accuracies from all blood meal hours into a single dataframe
+# =============================================================================
+# Summarise per-timepoint accuracy and plot as a horizontal bar chart
+# =============================================================================
+
+# Build accuracy summary from predictions stored during the prediction loop
+hour_labels = {"6h": "6 hours", "12h": "12 hours", "24h": "24 hours", "48h": "48 hours"}
 
 accuracy_df = pd.DataFrame({
-    "Blood meal hours": ['6 hours', '12 hours', '24 hours', '48 hours'],
-    "Accuracy": [np.round(accuracy_score(true_test_6h.argmax(axis=-1), pred_test_6h.argmax(axis=-1)), 2),
-                 np.round(accuracy_score(true_test_12h.argmax(axis=-1), pred_test_12h.argmax(axis=-1)), 2),
-                 np.round(accuracy_score(true_test_24h.argmax(axis=-1), pred_test_24h.argmax(axis=-1)), 2),
-                 np.round(accuracy_score(true_test_48h.argmax(axis=-1), pred_test_48h.argmax(axis=-1)), 2)]
+    "Blood meal hours": list(hour_labels.values()),
+    "Accuracy": [
+        np.round(
+            accuracy_score(
+                predictions_store[k][0].argmax(axis=-1),
+                predictions_store[k][1].argmax(axis=-1)
+            ), 2
+        )
+        for k in hour_labels
+    ]
 })
 
+# Save accuracy summary to CSV
 accuracy_df.to_csv(
-    os.path.join("..",
-                "Results", 
-                "CNN_TL", 
-                "tl_bloodmeal_hours_accuracies.csv"
-            )
+    os.path.join("..", "Results", "CNN_TL", "tl_bloodmeal_hours_accuracies.csv")
 )
 
 # %%
-
-# Plot the results
-plt.figure(figsize = (8, 4))
+# Plot per-timepoint accuracy as a horizontal bar chart
+fig, ax = plt.subplots(figsize=(8, 4))
 
 sns.barplot(
-    x = 'Accuracy',
-    y = 'Blood meal hours',
-    data = accuracy_df,
-    palette = 'colorblind',
-    width = 0.5, 
-    # orient='h'
+    x='Accuracy',
+    y='Blood meal hours',
+    data=accuracy_df,
+    palette='colorblind',
+    width=0.5,
+    ax=ax
 )
 
-# Add a horizontal dotted line at y=0.7
-plt.axvline(0.7, color='gray', linestyle='--', linewidth=2)
+# Reference line marking the 0.70 accuracy threshold
+ax.axvline(0.7, color='gray', linestyle='--', linewidth=2, label='0.70 threshold')
 
-# sns.despine(offset = 5, trim = False)
-# plt.xticks(rotation = 90)
-plt.xticks(np.arange(0.0, 1.0 + .1, step = 0.2))
-plt.ylabel('Hours', weight = 'bold')
-plt.xlabel("Accuracy", weight = 'bold')
-# plt.legend().remove()
-plt.tight_layout()
+ax.set_xticks(np.arange(0.0, 1.1, step=0.2))
+ax.set_ylabel('Hours', weight='bold')
+ax.set_xlabel('Accuracy', weight='bold')
+fig.tight_layout()
 
-plt.savefig(
-    os.path.join("..",
-                 "Results", 
-                "CNN_TL",
-                "tl_bloodmeal_hours_accuracies.png"
-                ), 
-    dpi = 500, 
-    bbox_inches = "tight"
+fig.savefig(
+    os.path.join("..", "Results", "CNN_TL", "tl_bloodmeal_hours_accuracies.png"),
+    dpi=500,
+    bbox_inches="tight"
 )
+# plt.show()
 # %%

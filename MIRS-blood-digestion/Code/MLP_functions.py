@@ -178,7 +178,7 @@ def graph_history(
     #not_validation = list(filter(lambda x: x[0:3] != "val", history.history.keys()))
     
     print('history.history.keys : {}'.format(history.history.keys()))
-    filtered = filter(lambda x: x[0:3] != "val", history.history.keys())
+    filtered = filter(lambda x: x[0:3] != "val" and x != "learning_rate", history.history.keys())
     not_validation = list(filtered)
     for i in not_validation:
         plt.figure(figsize=(6, 4))

@@ -497,7 +497,8 @@ def train_evaluate_tf(model, scaler, X, y, X_val, y_val):
             tf.keras.callbacks.EarlyStopping(
                 monitor = 'val_loss', 
                 patience = 30, 
-                verbose = 1, 
+                verbose = 1,
+                restore_best_weights = True, 
                 mode = 'auto'
             ), 
             CSVLogger(

@@ -1,0 +1,5 @@
+Unnamed: 0,precision,recall,f1-score,support
+Human,0.94,0.93,0.94,368
+accuracy,,,0.94,720
+macro avg,0.94,0.94,0.94,720
+weighted avg,0.94,0.94,0.94,720

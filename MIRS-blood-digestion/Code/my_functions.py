@@ -88,7 +88,7 @@ def plot_confusion_matrix(
     plt.ylabel('True Host', weight = 'bold')
     plt.xlabel('Predicted Host', weight = 'bold')
     plt.savefig(
-        os.path.join("..", "Results", figure_name + ".png"
+        os.path.join("..", "Results", "ALL_WN", figure_name + ".png"
         ), 
         dpi = 500, 
         bbox_inches = "tight"
@@ -183,7 +183,6 @@ def plot_algorithm_comparison(results, names):
     if ax.legend_:
         ax.legend_.remove()
     
-    fig.tight_layout()
     fig.tight_layout()
 
     return fig

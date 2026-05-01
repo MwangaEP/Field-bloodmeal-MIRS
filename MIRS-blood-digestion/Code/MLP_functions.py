@@ -113,19 +113,13 @@ def plot_confusion_matrix(
     plt.tight_layout()
     plt.ylabel('True Host', weight = 'bold')
     plt.xlabel('Predicted Host', weight = 'bold')
+    
     plt.savefig(
-                    (
-                        save_path 
-                        + "Confusion_Matrix_" 
-                        + model_name 
-                        + "_" 
-                        + fold 
-                        + "_" 
-                        + ".png"
-                    ), 
-                        dpi = 500, 
-                        bbox_inches = "tight"
-                )
+            os.path.join(save_path, 
+                         f"{'Confusion_Matrix'}_{model_name}_{fold}_{i}.png"),
+                         dpi=500,
+                         bbox_inches="tight",
+        )
 
     plt.close()
 
@@ -190,19 +184,13 @@ def graph_history(
         plt.grid(False)
         plt.xlabel("epoch", weight = 'bold')
         plt.ylabel(i)
+
         plt.savefig(
-                    save_path 
-                    + model_name 
-                    + "_" 
-                    + str(model_ver_num) 
-                    + "_"+str(fold) 
-                    + "_" 
-                    + i 
-                    + ".png", 
-                    dpi = 500, 
-                    bbox_inches = "tight"
-                    )
-        # plt.savefig(save_path +model_name+"_"+str(model_ver_num)+"_"+str(fold)+"_"+i + ".pdf", dpi = 500, bbox_inches="tight")
+            os.path.join(save_path, 
+                         f"{model_name}_{model_ver_num}_{fold}_{i}.png"),
+                         dpi=500,
+                         bbox_inches="tight",
+        )
         plt.close()
 
 #%%

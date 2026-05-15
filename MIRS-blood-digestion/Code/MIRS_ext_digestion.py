@@ -51,7 +51,7 @@ sns.set(
     context = "paper",
     style = "white",
     palette = "deep",
-    font_scale = 1.5,
+    font_scale = 2.0,
     color_codes = True,
     rc = ({"font.family": "Dejavu Sans"})
 )

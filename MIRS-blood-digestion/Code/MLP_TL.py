@@ -355,7 +355,7 @@ for key, d in TIME_POINTS.items():
     )
     print(f"\nClassification report — {label}:\n{cr_str}")
 
-    cr_df = pd.read_fwf(io.StringIO(cr_str), header=0).iloc[1:]
+    cr_df = pd.read_fwf(io.StringIO(cr_str), header=0)
     cr_df.to_csv(
         os.path.join(savedir, f"cr_report_TL_{tag}_bloodmeal.csv"),
         index=False,

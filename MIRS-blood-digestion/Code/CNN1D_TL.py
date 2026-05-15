@@ -591,7 +591,7 @@ for label, test_df in hour_datasets.items():
     )
 
     # Parse and save classification report as CSV
-    cr_df = pd.read_fwf(io.StringIO(cr), header=0).iloc[1:]
+    cr_df = pd.read_fwf(io.StringIO(cr), header=0)
     cr_df.to_csv(
         os.path.join("..", "Results", "CNN_TL", f"cr_report_TL_{label}_bloodmeal.csv")
     )
@@ -636,7 +636,7 @@ sns.set(
     context="paper",
     style="white",
     palette="deep",
-    font_scale=1.5,
+    font_scale=2.0,
     color_codes=True,
     rc={"font.family": "Dejavu Sans"}
 )
